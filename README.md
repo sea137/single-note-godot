@@ -66,3 +66,15 @@ APK 是签名后的个人安装版本，不是 Google Play 上架包。实际手
 字体：Noto Sans SC，按本界面的字符集做了子集处理，静态字重 450 和 650。SIL OFL 1.1 许可证见 `assets/OFL-NotoSansSC.txt`。后续添加新的中文文本时，应重新生成对应字体子集或替换完整字体。
 
 Godot Engine 使用 MIT 许可证，见 `assets/GODOT-LICENSE.txt`；相关第三方组件版权见 `assets/GODOT-COPYRIGHT.txt`。
+
+## GitHub Pages 网页版
+
+网页文件位于 `docs/`，钢琴采样也包含在该目录中，不需要连接 ChatGPT 即可练习。
+
+GitHub Pages 发布源：`main` 分支、`/docs` 目录。保存后更新这些文件会自动重新发布。
+
+发布网址：https://sea137.github.io/single-note-godot/
+
+网页版是独立的浏览器练习版本；安卓 1.2 的新增学习功能暂未全部移植到网页版。设置保存在各自浏览器本机。
+
+`docs/*` 已排除在 Godot 安卓导出之外，避免采样重复打包。
