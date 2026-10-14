@@ -25,6 +25,17 @@ var octave_buttons: Array = []
 var detail_label: Label
 var reveal_button: Button
 var contrast_button: Button
+var compare_keys: Array = []
+var compare_checks: Dictionary = {}
+var compare_summary: Label
+var touch_index = -1
+var touch_origin = Vector2.ZERO
+var touch_scroll_origin = 0
+var touch_dragging = false
+var touch_block_until = 0
+var history_bucket = "overall"
+var history_scope = true
+var audio_gains: Dictionary = {}
 var challenge_box: VBoxContainer
 var history: Array = []
 var samples: Dictionary = {}
@@ -52,6 +63,8 @@ func _ready():
 	font = load("res://assets/NotoSansSC.ttf")
 	strong_font = load("res://assets/NotoSansSC-Bold.ttf")
 	rng.randomize()
+	var gains = JSON.parse_string(FileAccess.get_file_as_string("res://assets/audio_gains.json"))
+	if gains is Dictionary: audio_gains = gains
 	_load_saved()
 	for note in NOTES:
 		for octave in [3,4,5]:
@@ -92,13 +105,17 @@ func _ready():
 
 func _notification(what):
 	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
-		if page in ["practice","reference"] and not session.is_empty():
+		if page == "compare" and not session.is_empty():
+			_show_practice(false)
+		elif page in ["practice","reference"] and not session.is_empty():
 			_end_session()
 		elif page != "setup":
 			_show_setup()
 		else:
 			get_tree().quit()
 	elif what == NOTIFICATION_APPLICATION_PAUSED:
+		touch_index = -1
+		touch_dragging = false
 		_stop_reference()
 		if page == "reference" and is_instance_valid(reference_pause): reference_pause.text = "继续试听"
 		if player:
@@ -149,7 +166,10 @@ func _button(text: String, action: Callable, primary: bool = false, height: int 
 	button.add_theme_stylebox_override("hover", _style(Color("365f4c") if primary else Color("edf2e5"), LINE))
 	button.add_theme_stylebox_override("pressed", _style(Color("214433") if primary else Color("dce9d0"), LINE))
 	button.add_theme_stylebox_override("focus", _style(Color.TRANSPARENT, Color("8caa75")))
-	button.pressed.connect(action)
+	button.mouse_filter = Control.MOUSE_FILTER_PASS
+	button.pressed.connect(func():
+		if not touch_dragging and Time.get_ticks_msec() >= touch_block_until: action.call()
+	)
 	return button
 
 func _space(parent: Control, height: int):
@@ -161,6 +181,8 @@ func _base(new_page: String):
 	_stop_reference()
 	_stop_sound()
 	page = new_page
+	touch_index = -1
+	touch_dragging = false
 	for child in get_children():
 		if child is Control:
 			remove_child(child)
@@ -388,7 +410,7 @@ func _show_practice(begin: bool):
 	content.add_child(challenge_box)
 	var help_row = HBoxContainer.new()
 	reveal_button = _button("查看答案", _reveal, false, 48)
-	contrast_button = _button("对比错音", _contrast, false, 48)
+	contrast_button = _button("多音对比", _contrast, false, 48)
 	contrast_button.visible = false
 	help_row.add_child(reveal_button)
 	help_row.add_child(contrast_button)
@@ -440,13 +462,14 @@ func _refresh_question():
 	detail_label.visible = false
 	challenge_box.visible = false
 	reveal_button.disabled = false
-	contrast_button.visible = not session.wrong_choices.is_empty()
+	contrast_button.visible = session.solved or not session.wrong_choices.is_empty()
 	for note in choices:
 		var button = choices[note]
 		button.disabled = session.solved or session.name_solved or note in session.wrong_choices
 		button.add_theme_stylebox_override("normal", _style(Color("fffef9"), LINE))
 		button.add_theme_stylebox_override("disabled", _style(Color("fffef9"), LINE))
 		button.add_theme_color_override("font_disabled_color", GREEN)
+	_paint_answers()
 	_update_stats()
 	session.response_started = Time.get_ticks_msec()
 	if session.solved:
@@ -505,8 +528,13 @@ func _answer(note: String):
 		contrast_button.visible = true
 		button.add_theme_stylebox_override("disabled", _style(Color("fae8df"), Color("d7a993")))
 		button.add_theme_color_override("font_disabled_color", Color("a35439"))
-		feedback.text = "还差一点，再听一次试试。"
+		session.solved = true
+		session.assisted = true
+		feedback.text = "正确答案已标绿；你的首答已标红。对比听一听，再继续。"
 		feedback.add_theme_color_override("font_color", Color("a35439"))
+		_show_answer_detail()
+		for b in choices.values(): b.disabled = true
+		_ready_next(false)
 		return
 	session.name_solved = true
 	session.solved = true
@@ -524,9 +552,9 @@ func _answer(note: String):
 	_show_answer_detail()
 	_ready_next()
 
-func _ready_next():
+func _ready_next(allow_auto: bool = true):
 	next_button.text = "查看练习结果  →" if int(session.limit) > 0 and session.number >= session.limit else "下一题  →"
-	if session.auto: advance_timer.start(1.1)
+	if session.auto and allow_auto and session.wrong_choices.is_empty() and not session.responses.is_empty() and session.responses.back().correct: advance_timer.start(2.0)
 
 func _play_note():
 	if session.is_empty() or page != "practice": return
@@ -538,7 +566,7 @@ func _play_note():
 func _play_key(key: String):
 	_stop_sound()
 	player.stream = samples[key]
-	player.volume_db = linear_to_db(maxf(float(settings.volume) / 100.0, 0.0001))
+	player.volume_db = -80.0 if float(settings.volume) <= 0 else linear_to_db(float(settings.volume) / 100.0) + float(audio_gains.get(key,0.0))
 	player.play()
 	audio_timer.start(1.4)
 
@@ -572,7 +600,7 @@ func _end_session():
 func _show_result(result: Dictionary):
 	_base("result")
 	content.add_child(_text("每一次聆听，都是积累", 14, MUTED))
-	content.add_child(_text("今天又进步了一点。", 32))
+	content.add_child(_text(_encouragement(result), 28))
 	content.add_child(_text("共作答 %d 题，首答正确 %d 题。" % [result.attempts, result.correct], 18, MUTED))
 	var card = _card(content)
 	var rate = 0 if result.attempts == 0 else roundi(float(result.correct) / result.attempts * 100)
@@ -590,9 +618,7 @@ func _show_result(result: Dictionary):
 	for key in result.get("exact_stats",{}):
 		var stat = result.exact_stats[key]
 		card.add_child(_text(_key_label(key) + "：%d / %d 首答正确" % [stat.correct,stat.heard],15,MUTED))
-	if result.get("mode",0) == 1:
-		for response in result.get("responses",[]):
-			card.add_child(_text(_key_label(response.key) + " · 你的答案 " + (str(response.guess) if response.guess != "" else "跳过"),15,MUTED))
+	_add_response_details(card,result)
 	card.add_child(_text("错题重试不重复计数；跳过计为错误。\n未作答便结束的当前题不计入统计。", 14, MUTED))
 	card.add_child(_button("再练一组  →", _start_session, true))
 	card.add_child(_button("调整练习设置", _show_setup))
@@ -604,6 +630,7 @@ func _show_history():
 	content.add_child(_text("你的练习记录", 32))
 	content.add_child(_text("仅保存在这部设备上，最多保留最近 100 次。", 16, MUTED))
 	content.add_child(_button("返回练习", _show_setup, true, 52))
+	_add_history_trend()
 	if history.is_empty(): content.add_child(_text("还没有记录。开始第一组练习吧。", 18, MUTED))
 	for entry in history:
 		var card = _card(content)
@@ -611,14 +638,20 @@ func _show_history():
 		var rate = roundi(float(entry.correct) / maxi(1,int(entry.attempts)) * 100)
 		card.add_child(_text("%d%%    ·    %d / %d 首答正确" % [rate, entry.correct,entry.attempts], 22))
 		card.add_child(_text("音名：" + " · ".join(entry.notes), 15, MUTED))
+		card.add_child(_text(_encouragement(entry),16,GREEN))
+		var details = VBoxContainer.new()
+		details.visible = false
+		card.add_child(_button("展开本次答题明细",func(): details.visible = not details.visible,false,46))
+		card.add_child(details)
+		_add_response_details(details,entry)
 	_footer()
 
 func _show_about():
 	_base("about")
-	content.add_child(_text("单音  1.1.0", 34))
+	content.add_child(_text("单音  1.2.0", 34))
 	var card = _card(content)
 	card.add_child(_text("为每天几分钟的单音练习而制作。", 20))
-	card.add_child(_text("新增：顺序试听、音区标签、错音对比、\n无参考检查、音区挑战和到期复习。\n复习间隔是可调整的初始规则，不是统一的记忆曲线。",16,MUTED))
+	card.add_child(_text("新增：答错自动标记、多音音列对比、\n触摸滚动优化、音量校准、成绩趋势和错选明细。\n复习间隔是可调整的初始规则，不是统一的记忆曲线。",16,MUTED))
 	card.add_child(_text("• 钢琴音色，36 个音符，C3–B5\n• 答案只需选音名，不要求识别八度\n• 完全离线，无账号、广告或联网权限\n• 设置和记录仅存于设备本地\n\n音频采样来源：TonedEar\nhttps://tonedear.com\n\n引擎：Godot Engine（MIT）\n字体：Noto Sans SC（SIL OFL 1.1）\n\n本版本供个人练习使用。", 17, MUTED))
 	content.add_child(_button("返回练习", _show_setup, true))
 	_footer()
@@ -703,6 +736,8 @@ func _show_answer_detail():
 	detail_label.visible = true
 	detail_label.text = _key_label(str(session.note)+str(session.octave))
 	reveal_button.disabled = true
+	contrast_button.visible = true
+	_paint_answers()
 
 func _reveal():
 	if session.is_empty() or session.mode == 1: return
@@ -718,12 +753,93 @@ func _reveal():
 	_show_answer_detail()
 	_ready_next()
 
+func _paint_answers():
+	if session.mode == 1: return
+	for note in choices:
+		var b = choices[note]
+		var wrong = note in session.wrong_choices
+		var right = note == session.note and (session.solved or session.name_solved)
+		var color = Color("dcebcf") if right else (Color("fae8df") if wrong else Color("fffef9"))
+		var border = Color("90ad7c") if right else (Color("d7a993") if wrong else LINE)
+		b.text = str(LABELS.get(note,note)) + (" ✓" if right else (" ✕" if wrong else ""))
+		b.add_theme_stylebox_override("normal",_style(color,border))
+		b.add_theme_stylebox_override("disabled",_style(color,border))
+		b.add_theme_color_override("font_disabled_color",Color("a35439") if wrong else GREEN)
+
 func _contrast():
-	if session.is_empty() or session.mode == 1 or session.wrong_choices.is_empty(): return
+	if session.is_empty() or session.mode == 1: return
 	advance_timer.stop()
 	var target = str(session.note)+str(session.octave)
-	var wrong = str(session.wrong_choices.back())+str(session.octave)
-	_show_reference(func(): _show_practice(false), [wrong,target], true, "对比这两个音")
+	compare_keys = [target]
+	for note in session.wrong_choices:
+		var key = str(note)+str(session.octave)
+		if key not in compare_keys: compare_keys.append(key)
+	_show_compare_picker()
+
+func _show_compare_picker():
+	_base("compare")
+	content.add_child(_text("把声音放在一起比较",28))
+	content.add_child(_text("正确音："+_key_label(str(session.note)+str(session.octave)),18))
+	content.add_child(_text("勾选多个音，按低到高播放。错误选项只记录音名，对比时使用本题八度。",15,MUTED))
+	var shortcuts = VBoxContainer.new()
+	content.add_child(shortcuts)
+	shortcuts.add_child(_button("本组全部声音",func(): compare_keys = _selected_keys(); _show_compare_picker(),false,48))
+	shortcuts.add_child(_button("同音名 · 低中高三个八度",func(): compare_keys = [str(session.note)+"3",str(session.note)+"4",str(session.note)+"5"]; _show_compare_picker(),false,48))
+	var interval_keys: Array = []
+	var anchor = str(session.note)+str(session.octave)
+	for key in compare_keys: interval_keys.append(key)
+	var lo = _pitch_number(anchor)
+	var hi = lo
+	for key in interval_keys: lo = mini(lo,_pitch_number(key)); hi = maxi(hi,_pitch_number(key))
+	shortcuts.add_child(_button("补全所选音之间的所有半音",func():
+		for o in [3,4,5]:
+			for n in NOTES:
+				var k = n+str(o)
+				if _pitch_number(k) >= lo and _pitch_number(k) <= hi and k not in compare_keys: compare_keys.append(k)
+		_show_compare_picker()
+	,false,48))
+	var expanded = VBoxContainer.new()
+	expanded.visible = false
+	content.add_child(_button("展开完整音列 C3–B5 · 手选多个音",func(): expanded.visible = not expanded.visible,false,48))
+	content.add_child(expanded)
+	compare_checks.clear()
+	for o in [3,4,5]:
+		expanded.add_child(_text(_octave_name(o),18))
+		var grid = GridContainer.new()
+		grid.columns = 3
+		expanded.add_child(grid)
+		for n in NOTES:
+			var k = n+str(o)
+			var b = CheckButton.new()
+			b.text = k
+			b.custom_minimum_size = Vector2(100,54)
+			b.mouse_filter = Control.MOUSE_FILTER_PASS
+			b.button_pressed = k in compare_keys
+			b.toggled.connect(func(on):
+				if on and k not in compare_keys: compare_keys.append(k)
+				elif not on: compare_keys.erase(k)
+				_update_compare_summary()
+			)
+			grid.add_child(b)
+			compare_checks[k] = b
+	compare_summary = _text("",15,MUTED)
+	content.add_child(compare_summary)
+	_update_compare_summary()
+	var selection_label = _text("",15,MUTED)
+	content.add_child(selection_label)
+	content.add_child(_button("播放所选声音  ♩",func():
+		if compare_keys.is_empty(): selection_label.text = "请至少勾选一个音。"; return
+		compare_keys.sort_custom(func(a,b): return _pitch_number(a) < _pitch_number(b))
+		_show_reference(func(): _show_compare_picker(),compare_keys,true,"多音对比 · 由低到高")
+	,true))
+	content.add_child(_button("返回本题",func(): _show_practice(false),false,52))
+	_footer()
+
+func _update_compare_summary():
+	if is_instance_valid(compare_summary): compare_summary.text = "已选 %d 个声音：" % compare_keys.size() + " · ".join(compare_keys)
+
+func _pitch_number(key: String) -> int:
+	return int(key.right(1))*12 + NOTES.find(key.left(key.length()-1))
 
 func _show_reference(on_done: Callable, keys: Array = [], mark_assisted: bool = false, title: String = "熟悉本组声音"):
 	_base("reference")
@@ -749,7 +865,7 @@ func _show_reference(on_done: Callable, keys: Array = [], mark_assisted: bool = 
 	reference_pause = _button("暂停试听",_toggle_reference,true,54)
 	content.add_child(reference_pause)
 	content.add_child(_button("重新按顺序试听",_restart_reference,false,50))
-	content.add_child(_button("继续练习  →" if not session.is_empty() else "返回设置",_finish_reference,false,54))
+	content.add_child(_button("返回对比选择" if title.begins_with("多音对比") else ("继续练习  →" if not session.is_empty() else "返回设置"),_finish_reference,false,54))
 	_footer()
 	_restart_reference()
 
@@ -833,3 +949,97 @@ func _show_memory():
 		for guess in confusions: card.add_child(_text("曾误选 %s：%d 次" % [guess,confusions[guess]],14,MUTED))
 	content.add_child(_text("初始间隔：答错 10 分钟；辅助答对约 1 小时；\n到期独立答对逐步间隔 1、3、7、14、30 天。\n提前重复答对不提升记忆阶段。",14,MUTED))
 	_footer()
+
+
+func _encouragement(result: Dictionary) -> String:
+	var total = int(result.get("attempts",0))
+	if total == 0: return "准备好了，就从一个音开始。"
+	var rate = float(result.get("correct",0))/total
+	if rate < 0.4: return "先熟悉声音，一次记住一个音。"
+	if rate < 0.6: return "已经认出不少音，试试缩小音组。"
+	if rate < 0.8: return "越来越稳了，重点听听容易混淆的音。"
+	if rate < 0.95: return "这一组很扎实，再用无参考检查验证。"
+	return "这一组表现出色，隔一段时间再来巩固。"
+
+func _add_response_details(parent: Control, result: Dictionary):
+	var responses = result.get("responses",[])
+	if responses.is_empty():
+		parent.add_child(_text("这条旧记录没有逐题选择明细。",14,MUTED))
+		return
+	parent.add_child(_text("逐题首答 · 正确音 → 我的选择",19))
+	for i in responses.size():
+		var r = responses[i]
+		var guess = str(r.get("guess",""))
+		var message = "%d. %s → %s  %s" % [i+1,_key_label(str(r.key)),guess if guess != "" else "跳过／查看答案","✓" if r.correct else "✕"]
+		parent.add_child(_text(message,16,GREEN if r.correct else Color("a35439")))
+
+func _history_points(bucket: String, same_scope: bool) -> Array:
+	var points: Array = []
+	for i in range(history.size()-1,-1,-1):
+		var entry = history[i]
+		if same_scope:
+			var notes = entry.notes.duplicate(); notes.sort()
+			var selected = settings.notes.duplicate(); selected.sort()
+			var octaves = entry.get("octaves",[])
+			var expected = [3,4,5] if int(settings.octave) == 0 else [int(settings.octave)+2]
+			if notes != selected or octaves != expected: continue
+		var total = int(entry.get("attempts",0)) if bucket == "overall" else int(entry.get(bucket+"_attempts",0))
+		var right = int(entry.get("correct",0)) if bucket == "overall" else int(entry.get(bucket+"_correct",0))
+		if total == 0: continue
+		points.append({"rate":100.0*right/total,"date":str(entry.date),"total":total,"right":right})
+	if points.size() > 20: points = points.slice(points.size()-20)
+	return points
+
+func _add_history_trend():
+	var card = _card(content)
+	card.add_child(_text("多次练习趋势",22))
+	var metric = OptionButton.new()
+	for title in ["全部首答","未用试听","辅助练习"]: metric.add_item(title)
+	metric.select(["overall","blind","guided"].find(history_bucket))
+	metric.custom_minimum_size.y = 50
+	metric.item_selected.connect(func(i): history_bucket = ["overall","blind","guided"][i]; _show_history())
+	card.add_child(metric)
+	var scope = CheckButton.new()
+	scope.text = "仅比较当前音组及音区"
+	scope.button_pressed = history_scope
+	scope.toggled.connect(func(on): history_scope = on; _show_history())
+	card.add_child(scope)
+	var points = _history_points(history_bucket,history_scope)
+	if points.is_empty(): card.add_child(_text("当前条件下还没有可比较的记录。",16,MUTED)); return
+	var chart = preload("res://trend_chart.gd").new()
+	chart.points = points
+	chart.chart_font = font
+	card.add_child(chart)
+	card.add_child(_text("最近 %d 次有效练习，左旧右新；缺少该类成绩的记录不按 0 分计。" % points.size(),14,MUTED))
+	var first = points.front(); var last = points.back()
+	card.add_child(_text("%.0f%% → %.0f%%（变化 %+.0f 个百分点）" % [first.rate,last.rate,last.rate-first.rate],18))
+	card.add_child(_text("最新：%s · %d / %d\n题量、音组、音区和提示方式会影响成绩。" % [last.date,last.right,last.total],14,MUTED))
+
+func _input(event: InputEvent):
+	# Track raw touches before child controls consume their emulated mouse events.
+	if not is_instance_valid(scroll): return
+	if event is InputEventScreenTouch:
+		if event.pressed and touch_index == -1:
+			touch_index = event.index
+			touch_origin = event.position
+			touch_scroll_origin = scroll.scroll_vertical
+			touch_dragging = false
+		elif event.index == touch_index and not event.pressed:
+			if touch_dragging:
+				touch_block_until = Time.get_ticks_msec()+180
+				get_viewport().set_input_as_handled()
+				scroll.propagate_notification(Control.NOTIFICATION_SCROLL_END)
+			touch_index = -1
+			touch_dragging = false
+	elif event is InputEventScreenDrag and event.index == touch_index:
+		var delta = event.position-touch_origin
+		if not touch_dragging and absf(delta.y) > 12 and absf(delta.y) > absf(delta.x):
+			touch_dragging = true
+			scroll.propagate_notification(Control.NOTIFICATION_SCROLL_BEGIN)
+		if touch_dragging:
+			scroll.scroll_vertical = touch_scroll_origin-roundi(delta.y)
+			get_viewport().set_input_as_handled()
+	elif event is InputEventMouseMotion and touch_dragging:
+		get_viewport().set_input_as_handled()
+	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed and Time.get_ticks_msec() < touch_block_until:
+		get_viewport().set_input_as_handled()

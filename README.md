@@ -4,6 +4,15 @@ Godot 4.7.2 / GDScript 原生项目。入口是 `main.tscn`，界面和逻辑在
 
 ## 功能
 
+### 1.2 新增
+
+- 普通练习答错后显示正确选项的绿色 ✓ 与首答错误的红色 ✕；页面重建后保留标记，不会重复计分。无参考测试仍在结束后揭晓。
+- 多音对比支持手选 C3–B5 全部 36 个音、补全所选音之间的半音、本组音列与同音名三个八度，按音高排序播放。
+- 原始采样逐音测量峰值，以 2 dB 余量校准播放增益；0% 音量保持静音。
+- 原始触摸事件超过竖向拖动阈值时接管滚动并取消按钮点击；Android 返回键可从对比选择返回本题。
+- 最近 20 次有效练习曲线，可按音组与音区筛选，分别比较全部、未用试听和辅助成绩。缺失成绩不当作零分。
+- 按准确度提供鼓励与练习建议，结果和历史可查看正确音 → 首答选择。旧记录没有的明细不会补造。
+
 ### 1.1 新增
 
 - 按音高从低到高试听当前范围；C/D/E 跨 3 个八度时依次播放 C3/D3/E3、C4/D4/E4、C5/D5/E5。支持暂停、单独播放、重新开始。
@@ -26,9 +35,9 @@ Godot 4.7.2 / GDScript 原生项目。入口是 `main.tscn`，界面和逻辑在
 
 ## 安装
 
-从[安装页面](https://single-note-practice.zippyhake16.chatgpt.site/android/)获取 `SingleNote-1.1.apk`，或将本地 APK 传到安卓手机，在手机中打开并按系统提示安装。最低 Android 7.0（API 24），支持 ARM64 和 ARMv7。安装页面仅限原网站账号访问。
+从[安装页面](https://single-note-practice.zippyhake16.chatgpt.site/android/)获取 `SingleNote-1.2.apk`，或将本地 APK 传到安卓手机，在手机中打开并按系统提示安装。最低 Android 7.0（API 24），支持 ARM64 和 ARMv7。安装页面仅限原网站账号访问。
 
-同一签名、同一包名、版本代码从 1 升至 2，可覆盖旧版安装；保留原 App 数据。请勿先卸载旧版，否则 Android 会清除它的本地记录。
+同一签名、同一包名、版本代码升至 3，可覆盖 1.0／1.1 安装并保留原 App 数据。请勿先卸载旧版，否则 Android 会清除它的本地记录。
 
 APK 是签名后的个人安装版本，不是 Google Play 上架包。实际手机上的声音、手势和设备兼容性仍需真机确认。
 
@@ -39,6 +48,7 @@ APK 是签名后的个人安装版本，不是 Google Play 上架包。实际手
 ```powershell
 & 'E:/Steam/steamapps/common/Godot Engine/godot.windows.opt.tools.64.exe' --headless --path . --script tests/smoke.gd
 & 'E:/Steam/steamapps/common/Godot Engine/godot.windows.opt.tools.64.exe' --headless --path . --script tests/learning_test.gd
+& 'E:/Steam/steamapps/common/Godot Engine/godot.windows.opt.tools.64.exe' --headless --path . --script tests/regression_v12.gd
 ```
 
 已检查 36 个音频可解码，以及首次正确、错题重试、跳过、有限题数、随机音区、无限练习、自动进入下一题和结束后取消计时器。

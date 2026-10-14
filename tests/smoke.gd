@@ -64,7 +64,7 @@ func run():
 	app._start_session()
 	app._answer("C")
 	check(not app.advance_timer.is_stopped(), "auto proceed timer armed")
-	await create_timer(1.25).timeout
+	await create_timer(2.15).timeout
 	check(app.page == "result", "auto proceed reaches result")
 	app._start_session()
 	app._answer("C")
